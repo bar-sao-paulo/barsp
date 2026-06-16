@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Bar São Paulo — Reservas</title>
+<title>Bar São Paulo — Painel</title>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -122,6 +122,7 @@ function buildConfirmationWhatsAppLink(reservation, date) {
 // sempre seja concluída.
 const SUPABASE_URL = 'https://azgojxotsjdfwoxquxdj.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_WN1srJPcZ_1CYaZL6JE2RA_YeBi5Vwc';
+const ADMIN_SESSION_KEY = 'bsp_admin_session';
 
 const memoryStore = {};
 
@@ -218,7 +219,23 @@ async function loadAdminReservations(date, accessToken) {
   }
 }
 
+function getStoredSession() {
+  try {
+    const raw = localStorage.getItem(ADMIN_SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
 
+function storeSession(session) {
+  try {
+    if (session) localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify(session));
+    else localStorage.removeItem(ADMIN_SESSION_KEY);
+  } catch (e) {
+    // ambiente sem localStorage (ex.: pré-visualização) — sessão fica só em memória
+  }
+}
 
 
 function SectionCard({ icon: Icon, label, accent, children }) {
@@ -385,6 +402,7 @@ function ReservationApp() {
     });
   });
 
+  const [view, setView] = useState('booking');
   const [selectedDateIdx, setSelectedDateIdx] = useState(0);
   const [selectedTime, setSelectedTime] = useState(null);
   const [partySize, setPartySize] = useState(2);
@@ -395,6 +413,12 @@ function ReservationApp() {
   const [error, setError] = useState('');
   const [confirmation, setConfirmation] = useState(null);
 
+  const [adminSession, setAdminSession] = useState(() => getStoredSession());
+  const [adminReservations, setAdminReservations] = useState([]);
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [loginForm, setLoginForm] = useState({ email: '', password: '' });
+  const [loginError, setLoginError] = useState('');
+  const [loggingIn, setLoggingIn] = useState(false);
 
   const selectedDate = dates[selectedDateIdx];
 
@@ -418,8 +442,50 @@ function ReservationApp() {
     setError('');
   }, [selectedDateIdx]);
 
+  const refreshAdmin = useCallback(async () => {
+    if (!adminSession) return;
+    setAdminLoading(true);
+    const result = await loadAdminReservations(selectedDate, adminSession.accessToken);
+    if (!result.ok && result.status === 401) {
+      setAdminSession(null);
+      storeSession(null);
+      setAdminReservations([]);
+    } else {
+      setAdminReservations(result.list);
+    }
+    setAdminLoading(false);
+  }, [adminSession, selectedDate]);
 
-    const handleSubmit = () => {
+  useEffect(() => {
+    if (view === 'admin' && adminSession) refreshAdmin();
+  }, [view, adminSession, refreshAdmin]);
+
+  const handleLogin = async () => {
+    if (!loginForm.email.trim() || !loginForm.password) {
+      setLoginError('Preencha e-mail e senha.');
+      return;
+    }
+    setLoggingIn(true);
+    setLoginError('');
+    const result = await signIn(loginForm.email.trim(), loginForm.password);
+    if (result.ok) {
+      const session = { accessToken: result.accessToken, email: result.email };
+      setAdminSession(session);
+      storeSession(session);
+      setLoginForm({ email: '', password: '' });
+    } else {
+      setLoginError(result.message);
+    }
+    setLoggingIn(false);
+  };
+
+  const handleLogout = () => {
+    setAdminSession(null);
+    storeSession(null);
+    setAdminReservations([]);
+  };
+
+  const handleSubmit = () => {
     if (!selectedTime) { setError('Escolha um horário para continuar.'); return; }
     if (!form.name.trim() || !form.phone.trim()) { setError('Preencha nome e telefone para confirmar.'); return; }
 
@@ -466,6 +532,8 @@ function ReservationApp() {
     refresh();
   };
 
+  const totalToday = adminReservations.reduce((s, r) => s + r.partySize, 0);
+  const sortedReservations = [...adminReservations].sort((a, b) => a.time.localeCompare(b.time));
 
   return (
     <div className="min-h-screen pb-12" style={{ backgroundColor: colors.bg, color: colors.charcoal, fontFamily: "'Nunito Sans', sans-serif" }}>
@@ -479,8 +547,17 @@ function ReservationApp() {
         input::placeholder, textarea::placeholder { color: ${colors.textMuted}; opacity: 0.8; }
       `}</style>
 
+      <div className="px-5 pt-5 max-w-md mx-auto flex justify-end">
+        <button
+          onClick={() => setView(view === 'booking' ? 'admin' : 'booking')}
+          className="font-display text-xs font-bold uppercase tracking-wider px-3 py-1.5 rounded-full border transition-colors focus:outline-none focus:ring-2 focus:ring-red-300"
+          style={{ borderColor: colors.border, color: colors.textMuted, backgroundColor: colors.card }}
+        >
+          {view === 'booking' ? 'Painel' : 'Reservar'}
+        </button>
+      </div>
 
-      {!confirmation && (
+      {view === 'booking' && !confirmation && (
         <header className="px-5 pt-3 pb-6 text-center max-w-md mx-auto">
           <div className="inline-block rounded-3xl p-2 shadow-md" style={{ backgroundColor: colors.card, border: `1px solid ${colors.border}` }}>
             <img
@@ -499,7 +576,7 @@ function ReservationApp() {
       )}
 
       <main className="px-5 max-w-md mx-auto">
-
+        {view === 'booking' ? (
           confirmation ? (
             <div className="pt-6">
               <Ticket reservation={confirmation} date={selectedDate} onReset={resetBooking} />
@@ -600,6 +677,95 @@ function ReservationApp() {
               </p>
             </div>
           )
+        ) : (
+          <div className="space-y-4 pt-2">
+            <div className="flex items-center gap-3">
+              <div className="rounded-2xl p-1 shadow-sm shrink-0" style={{ backgroundColor: colors.card, border: `1px solid ${colors.border}` }}>
+                <img src={LOGO_DATA_URI} alt={RESTAURANT_NAME} className="w-12 h-12 object-contain rounded-xl" />
+              </div>
+              <div>
+                <h2 className="font-display text-xl font-extrabold" style={{ color: colors.red }}>Painel do restaurante</h2>
+                <p className="text-xs" style={{ color: colors.textMuted }}>Confirmações: {formatPhoneDisplay(RESTAURANT_PHONE)}</p>
+              </div>
+            </div>
+
+            {!adminSession ? (
+              <SectionCard icon={User} label="Login do restaurante">
+                <div className="space-y-2">
+                  <p className="text-xs mb-1" style={{ color: colors.textMuted }}>
+                    Entre com o login criado no Supabase (Authentication → Users) para ver os dados das reservas.
+                  </p>
+                  <input
+                    value={loginForm.email}
+                    onChange={(e) => setLoginForm((f) => ({ ...f, email: e.target.value }))}
+                    placeholder="E-mail"
+                    autoComplete="username"
+                    className="w-full rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-red-300"
+                    style={{ backgroundColor: colors.bg, border: `1px solid ${colors.border}`, color: colors.charcoal }}
+                  />
+                  <input
+                    type="password"
+                    value={loginForm.password}
+                    onChange={(e) => setLoginForm((f) => ({ ...f, password: e.target.value }))}
+                    placeholder="Senha"
+                    autoComplete="current-password"
+                    className="w-full rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-red-300"
+                    style={{ backgroundColor: colors.bg, border: `1px solid ${colors.border}`, color: colors.charcoal }}
+                  />
+                  {loginError && (
+                    <p className="text-sm rounded-2xl px-4 py-3" style={{ backgroundColor: '#FCEAE7', color: colors.redDark, border: `1px solid ${colors.red}` }}>
+                      {loginError}
+                    </p>
+                  )}
+                  <button
+                    onClick={handleLogin}
+                    disabled={loggingIn}
+                    className="w-full rounded-full py-3 font-display text-sm font-extrabold uppercase tracking-wider transition-opacity disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-red-300"
+                    style={{ backgroundColor: colors.red, color: '#FFFFFF' }}
+                  >
+                    {loggingIn ? 'Entrando...' : 'Entrar'}
+                  </button>
+                </div>
+              </SectionCard>
+            ) : (
+              <>
+                <div className="flex items-center justify-between gap-2 flex-wrap px-1">
+                  <p className="text-xs" style={{ color: colors.textMuted }}>Conectado como {adminSession.email}</p>
+                  <button onClick={handleLogout} className="font-display text-xs font-bold uppercase tracking-wider underline" style={{ color: colors.textMuted }}>Sair</button>
+                </div>
+                <SectionCard icon={Calendar} label="Data">
+                  <DateStrip dates={dates} selectedIdx={selectedDateIdx} onSelect={setSelectedDateIdx} />
+                </SectionCard>
+                <div className="flex items-center justify-between gap-2 flex-wrap px-1">
+                  <h3 className="font-display text-lg font-extrabold" style={{ color: colors.charcoal }}>{formatLongDate(selectedDate)}</h3>
+                  <span className="font-display text-xs font-bold uppercase tracking-wide" style={{ color: colors.textMuted }}>{adminReservations.length} {adminReservations.length === 1 ? 'reserva' : 'reservas'} · {totalToday} pessoas</span>
+                </div>
+                <div className="space-y-2">
+                  {adminLoading && <p className="text-sm" style={{ color: colors.textMuted }}>Carregando...</p>}
+                  {!adminLoading && sortedReservations.length === 0 && (
+                    <p className="text-sm rounded-2xl px-4 py-4" style={{ backgroundColor: colors.card, border: `1px solid ${colors.border}`, color: colors.textMuted }}>
+                      Nenhuma reserva para este dia ainda. As reservas feitas pelos clientes aparecem aqui automaticamente.
+                    </p>
+                  )}
+                  {sortedReservations.map((r) => (
+                    <div key={r.id} className="rounded-2xl px-4 py-3 flex items-center justify-between gap-3" style={{ backgroundColor: colors.card, border: `1px solid ${colors.border}` }}>
+                      <div>
+                        <p className="font-display text-sm font-extrabold" style={{ color: colors.red }}>{r.time}</p>
+                        <p className="font-display text-base font-bold mt-0.5" style={{ color: colors.charcoal }}>{r.name}</p>
+                        {r.notes && <p className="text-xs mt-0.5" style={{ color: colors.textMuted }}>{r.notes}</p>}
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-sm font-semibold" style={{ color: colors.charcoal }}>{r.partySize} {r.partySize === 1 ? 'pessoa' : 'pessoas'}</p>
+                        <p className="text-xs mt-0.5" style={{ color: colors.textMuted }}>{r.phone}</p>
+                        <p className="font-mono text-xs mt-0.5" style={{ color: colors.textMuted }}>#{r.id}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </main>
     </div>
   );
